@@ -22,7 +22,7 @@ const transporter = nodemailer.createTransport({
 });
 
 const sendConfirmationEmail = async (to, token) => {
-    const confirmationUrl = `http://localhost:3000/api/users/confirm-email?token=${token}`;
+    const confirmationUrl = `http://localhost:4200/confirm?token=${token}`;
     // Utilisez un service comme nodemailer pour envoyer l'email
     const mailOptions = {
         from: process.env.GMAIL_USER,
@@ -44,25 +44,20 @@ const sendConfirmationEmail = async (to, token) => {
 
 const confirmEmail = async (req, res) => {
     try {
-        // Récupérer le token depuis la requête
         const { token } = req.query;
-        // Vérification si le token est fourni
+
         if (!token) {
             return res.status(400).json('Token is missing');
         }
 
-        // Clé secrète pour décoder le token
         const jwtKey = process.env.JWT_SECRET_KEY;
 
-        // Décodage du token
         const decoded = jwt.verify(token, jwtKey);
 
-        // Vérifier si le token a bien le bon objectif (confirmation de l'email)
         if (decoded.purpose !== 'email-confirmation') {
             return res.status(403).json('Invalid token or expired.');
         }
         
-        // Mise à jour de l'utilisateur pour confirmer l'email
         const user = await userModel.update(
             { isEmailConfirmed: true },
             { where: { id: decoded.id } }
@@ -72,7 +67,7 @@ const confirmEmail = async (req, res) => {
             return res.status(404).json('User not found');
         }
 
-        res.json('Email confirmed successfully!');
+        res.status(200).json('Email confirmed successfully!');
         
     } catch (err) {
         console.log(err);
@@ -88,8 +83,10 @@ const registerUser = async (req, res) => {
 
         const user = await userModel.findOne({
             where: {
-                username: username,
-                email: email
+                [Op.or]: [
+                    { email: email || null },
+                    { username: username || null }
+                ]
             }
         })
 
@@ -116,8 +113,6 @@ const registerUser = async (req, res) => {
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // const now = moment().tz('Europe/Paris')
-
         const newUser = await userModel.create({
             username: username,
             email: email,
@@ -129,7 +124,7 @@ const registerUser = async (req, res) => {
         });
 
 
-        const token = createToken(newUser.id, 'email-confirmation', '15', 'm')
+        const token = createToken(newUser.id, 'email-confirmation', '1', 'd')
 
         await sendConfirmationEmail(newUser.email, token);
 
@@ -137,13 +132,14 @@ const registerUser = async (req, res) => {
 
     } catch (err) {
         console.log(err)
-        res.status(500).json(err)
+        console.error("Error during user registration:", err);
+        res.status(500).json({ message: "Internal server error", error: err.message });
     }
 }
 
 const loginUser = async (req, res) => {
 
-    const { username, email, password } = req.body
+    const { username, email, password, token } = req.body
 
     if ((!username && !email) || !password) {
         return res.status(400).json('Username/email and password are required');
@@ -168,13 +164,47 @@ const loginUser = async (req, res) => {
         if (!isPasswordValid)
             return res.status(400).json('Invalid username / email or password')
 
-        const token = createTokenConfirmation(user.id, 'auth', '1', 'd')
+        if (!user.isEmailConfirmed) {
+            const newToken = createToken(user.id, 'email-confirmation', '15', 'm');
+            
+            await sendConfirmationEmail(user.email, newToken);
+
+            return res.status(403).json({
+                message: 'Please confirm your email before logging in.',
+                tokenExpired: true, // Indiquer au frontend que le token est expiré et un nouvel email a été envoyé
+                info: 'A new confirmation email has been sent to your inbox.'
+            });
+        }
+
+        // if (!token) {
+        //     return res.status(400).json('Token is required');
+        // }
+
+        // const jwtKey = process.env.JWT_SECRET_KEY;
+
+        // let decoded;
+        // try {
+        //     decoded = jwt.verify(token, jwtKey);
+        // } catch (err) {
+        //     return res.status(400).json('Invalid or expired token');
+        // }
+
+        // if (decoded.id !== user.id) {
+        //     return res.status(403).json('Token does not match the user');
+        // }
+
+        await userModel.update(
+            { isConnected: true },
+            { where: { id: user.id } }
+        );
+
+        const newToken = createToken(user.id, 'auth', '1', 'd')
 
         res.status(200).json({
             id: user.id,
             username: user.username,
             email: user.email,
-            token
+            token: newToken
         })
 
     } catch (err) {
@@ -182,6 +212,40 @@ const loginUser = async (req, res) => {
         res.status(500).json(err)
     }
 }
+
+const logoutUser = async (req, res) => {
+    try {
+        const { token } = req.body; // On récupère le token depuis la requête (peut être dans les headers ou le body)
+
+        if (!token) {
+            return res.status(400).json('Token is missing');
+        }
+
+        const jwtKey = process.env.JWT_SECRET_KEY;
+        
+        // Décoder le token pour obtenir l'ID de l'utilisateur
+        const decoded = jwt.verify(token, jwtKey);
+
+        // Mettre à jour l'utilisateur pour définir isConnected à false
+        const user = await userModel.update(
+            { isConnected: false },
+            { where: { id: decoded.id } }
+        );
+
+        // Si l'utilisateur n'a pas été trouvé
+        if (!user) {
+            return res.status(404).json('User not found');
+        }
+
+        // Réponse en cas de succès
+        res.status(200).json('User logged out successfully!');
+
+    } catch (err) {
+        console.log(err);
+        res.status(500).json('Error logging out user');
+    }
+};
+
 
 const findUser = async (req, res) => {
 
@@ -215,6 +279,7 @@ module.exports = {
     confirmEmail,
     registerUser,
     loginUser,
+    logoutUser,
     findUser,
     getUser
 }

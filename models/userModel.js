@@ -40,6 +40,10 @@ const User = database.define('users', {
         type: DataTypes.BOOLEAN,
         defaultValue: false
     },
+    isConnected: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false
+    },
 });
 
 database.sync()
